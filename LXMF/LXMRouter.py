@@ -33,7 +33,8 @@ class LXMRouter:
     RETRY_BACKOFF_FACTOR  = 2
     RETRY_WAIT_MIN        = 10
     MAX_RETRY_WAIT        = 480
-    FHT_RETRY_FACTOR      = 1.5
+    RTT_RETRY_FACTOR      = 2
+    RETRY_PROOF_BYTES     = 90
     PATH_REQUEST_WAIT     = 60
     PATH_REQUEST_COOLDOWN = 120
     TRIES_BEFORE_PATH_REQ = 3
@@ -2708,12 +2709,15 @@ class LXMRouter:
         lxmessage.next_delivery_attempt = time.time() + self.path_request_wait()
         self.throttled_path_request(destination_hash)
 
-    def destination_retry_base(self, destination_hash):
+    def destination_retry_base(self, destination_hash, data_size=None):
+        if data_size is None or data_size > RNS.Reticulum.MTU: data_size = RNS.Reticulum.MTU
         rtt = self.destination_rtts.get(destination_hash)
         if rtt:
-            base = rtt * RNS.Link.TRAFFIC_TIMEOUT_FACTOR
+            base = rtt * LXMRouter.RTT_RETRY_FACTOR
         elif RNS.Transport.has_path(destination_hash):
-            base = RNS.Reticulum.get_instance().get_first_hop_timeout(destination_hash) * LXMRouter.FHT_RETRY_FACTOR
+            first_hop_timeout = RNS.Reticulum.get_instance().get_first_hop_timeout(destination_hash)
+            per_byte_latency = max(first_hop_timeout - RNS.Reticulum.DEFAULT_PER_HOP_TIMEOUT, 0) / RNS.Reticulum.MTU
+            base = per_byte_latency * (data_size + LXMRouter.RETRY_PROOF_BYTES) + RNS.Reticulum.DEFAULT_PER_HOP_TIMEOUT
         else:
             base = LXMRouter.DELIVERY_RETRY_WAIT
         return min(max(base, LXMRouter.RETRY_WAIT_MIN), LXMRouter.MAX_RETRY_WAIT)
@@ -2723,7 +2727,7 @@ class LXMRouter:
             destination_hash = self.outbound_propagation_node
         else:
             destination_hash = lxmessage.get_destination().hash
-        wait = self.destination_retry_base(destination_hash) * (LXMRouter.RETRY_BACKOFF_FACTOR ** max(lxmessage.delivery_attempts-1, 0))
+        wait = self.destination_retry_base(destination_hash, getattr(lxmessage, "packed_size", None)) * (LXMRouter.RETRY_BACKOFF_FACTOR ** max(lxmessage.delivery_attempts-1, 0))
         wait = min(wait, LXMRouter.MAX_RETRY_WAIT)
         return wait + random.uniform(0, wait/4)
 
